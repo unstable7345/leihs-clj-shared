@@ -116,16 +116,75 @@
                               reservation
                               inventory-pool-and-model-group-ids))))
 
+(defn ->local-time [t]
+  (cond
+    (nil? t) nil
+    (instance? java.sql.Time t) (.toLocalTime ^java.sql.Time t)
+    (string? t) (t/local-time t)
+    :else t))
+
+(defn time-window
+  "[start end] of a reservation booked for a time window of its single day,
+  nil for a whole-day reservation."
+  [{:keys [start_time end_time]}]
+  (when (and start_time end_time)
+    [(->local-time start_time) (->local-time end_time)]))
+
+(defn overlap? [[start1 end1] [start2 end2]]
+  (and (t/before? start1 end2) (t/before? start2 end1)))
+
+(defn conflicts-with-window?
+  "Whether the reservation competes for the same items as a request for
+  `window` (nil = whole day). Whole-day and late reservations conflict with
+  every window."
+  [window reservation]
+  (let [res-window (time-window reservation)]
+    (or (nil? window)
+        (nil? res-window)
+        (late? reservation)
+        (overlap? window res-window))))
+
+(defn windows-to-check
+  "The windows to compute the changes for. A request for a window needs only
+  that one. A whole-day request has to be fulfilled in every window booked by
+  the reservations; without any, all reservations are whole-day ones."
+  [window reservations]
+  (if window
+    [window]
+    (or (->> reservations (keep time-window) distinct seq)
+        [nil])))
+
+(defn- load-model-in-pool
+  "The running reservations and a fn building the changes for a subset of
+  them."
+  [tx model-id pool-id exclude-res-ids]
+  (let [model (q/get-model-by-id tx model-id)
+        entitlements (q/get-entitlements-for-model-and-pool tx model-id pool-id)
+        group-ids (q/get-inventory-pool-and-model-group-ids tx model-id pool-id)
+        initial-changes (init tx entitlements pool-id)]
+    {:running-reservations (q/running-reservations tx model-id pool-id exclude-res-ids)
+     :build-fn (fn [reservations]
+                 (reduce (fn [changes reservation]
+                           (extend-with changes reservation model group-ids))
+                         initial-changes
+                         reservations))}))
+
+(defn main-per-window
+  "Changes for each window to check (see `windows-to-check`). A quantity is
+  available when it is available in all of them. `window` is [start-time
+  end-time] (strings or local times) or nil for whole days."
+  [tx model-id pool-id exclude-res-ids window]
+  (let [{:keys [running-reservations build-fn]}
+        (load-model-in-pool tx model-id pool-id exclude-res-ids)
+        window (some->> window (mapv ->local-time))]
+    (map (fn [w]
+           (build-fn (filter #(conflicts-with-window? w %) running-reservations)))
+         (windows-to-check window running-reservations))))
+
 (defn main
+  "Changes over all running reservations, regardless of their time windows."
   ([tx model-id pool-id] (main tx model-id pool-id nil))
   ([tx model-id pool-id exclude-res-ids]
-   (let [model (q/get-model-by-id tx model-id)
-         running-reservations (q/running-reservations tx model-id pool-id exclude-res-ids)
-         entitlements (q/get-entitlements-for-model-and-pool tx model-id pool-id)
-         inventory-pool-and-model-group-ids
-         (q/get-inventory-pool-and-model-group-ids tx model-id pool-id)
-         initial-changes (init tx entitlements pool-id)]
-     (reduce (fn [changes reservation]
-               (extend-with changes reservation model inventory-pool-and-model-group-ids))
-             initial-changes
-             running-reservations))))
+   (let [{:keys [running-reservations build-fn]}
+         (load-model-in-pool tx model-id pool-id exclude-res-ids)]
+     (build-fn running-reservations))))
