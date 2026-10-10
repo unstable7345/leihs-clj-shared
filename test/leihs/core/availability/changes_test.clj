@@ -41,3 +41,19 @@
                                      (reservation-in morning)
                                      (reservation-in afternoon)
                                      (reservation-in morning)])))))
+
+(deftest overtime?-test
+  (let [today (t/local-date)
+        at (fn [hh-mm] (t/local-date-time today (t/local-time hh-mm)))
+        handed-over (assoc (reservation-in morning)
+                           :status "signed" :start_date today :end_date today
+                           :returned_date nil)]
+    (is (not (ch/overtime? (at "12:00") handed-over)))
+    (is (ch/overtime? (at "13:00") handed-over))
+    (is (ch/overtime? (at "14:00") handed-over))
+    (is (not (ch/overtime? (at "14:00") (assoc handed-over :status "approved"))))
+    (is (not (ch/overtime? (at "14:00") (assoc handed-over :returned_date today))))
+    (is (not (ch/overtime? nil handed-over)))
+    (testing "an overtime reservation blocks the later windows of the day"
+      (is (not (ch/conflicts-with-window? afternoon handed-over (at "12:00"))))
+      (is (ch/conflicts-with-window? afternoon handed-over (at "14:00"))))))

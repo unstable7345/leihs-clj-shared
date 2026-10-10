@@ -4,7 +4,9 @@
    [com.rpl.specter :as s]
    [java-time :as t]
    [leihs.core.availability.allocations :as a]
-   [leihs.core.availability.queries :as q]))
+   [leihs.core.availability.queries :as q]
+   [leihs.core.settings :refer [settings]]
+   [leihs.core.time-zone :as time-zone]))
 
 (def UTC-ZONE-ID (java.time.ZoneId/of "UTC"))
 
@@ -133,16 +135,38 @@
 (defn overlap? [[start1 end1] [start2 end2]]
   (and (t/before? start1 end2) (t/before? start2 end1)))
 
+(defn now-in-time-zone
+  "The current date and time in the time zone of the settings, in which the
+  times of the time slots are given."
+  [tx]
+  (let [zone (or (-> (settings tx [:time_zone]) :time_zone time-zone/zone-id)
+                 UTC-ZONE-ID)]
+    (t/local-date-time (t/instant) zone)))
+
+(defn overtime?
+  "Whether a handed over time slot reservation is still not returned after the
+  end of its time slot (`now` as local date time). Like a late one, the item
+  is then missing for every other window."
+  [now {:keys [status returned_date end_date] :as reservation}]
+  (boolean
+   (when-let [[_ end-time] (time-window reservation)]
+     (and now
+          (= "signed" (some-> status name))
+          (nil? returned_date)
+          (not (t/after? (t/local-date-time (t/local-date end_date) end-time) now))))))
+
 (defn conflicts-with-window?
   "Whether the reservation competes for the same items as a request for
-  `window` (nil = whole day). Whole-day and late reservations conflict with
-  every window."
-  [window reservation]
-  (let [res-window (time-window reservation)]
-    (or (nil? window)
-        (nil? res-window)
-        (late? reservation)
-        (overlap? window res-window))))
+  `window` (nil = whole day). Whole-day, late and overtime reservations
+  conflict with every window."
+  ([window reservation] (conflicts-with-window? window reservation nil))
+  ([window reservation now]
+   (let [res-window (time-window reservation)]
+     (or (nil? window)
+         (nil? res-window)
+         (late? reservation)
+         (overtime? now reservation)
+         (overlap? window res-window)))))
 
 (defn windows-to-check
   "The windows to compute the changes for. A request for a window needs only
@@ -176,9 +200,10 @@
   [tx model-id pool-id exclude-res-ids window]
   (let [{:keys [running-reservations build-fn]}
         (load-model-in-pool tx model-id pool-id exclude-res-ids)
-        window (some->> window (mapv ->local-time))]
+        window (some->> window (mapv ->local-time))
+        now (now-in-time-zone tx)]
     (map (fn [w]
-           (build-fn (filter #(conflicts-with-window? w %) running-reservations)))
+           (build-fn (filter #(conflicts-with-window? w % now) running-reservations)))
          (windows-to-check window running-reservations))))
 
 (defn main
