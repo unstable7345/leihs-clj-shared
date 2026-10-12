@@ -17,7 +17,8 @@
 (defn maximum-available-in-pool-and-period-summed-for-groups
   "Returns the maximum available quantity for a model in a single inventory pool
   over the given date range, summed across all entitlement groups the user belongs to.
-  `window` is the [start-time end-time] of a same-day reservation, nil for whole days."
+  `window` is the [start-time end-time] of a reservation by the hour (from
+  start-time of start-date to end-time of end-date), nil for whole days."
   ([tx model-id user-id start-date end-date pool-id]
    (maximum-available-in-pool-and-period-summed-for-groups
     tx model-id user-id start-date end-date pool-id nil))
@@ -29,7 +30,8 @@
   ([tx model-id user-id start-date end-date pool-id exclude-res-ids window]
    (let [user-group-ids (q/get-user-group-ids tx user-id)
          group-ids (concat [:general] user-group-ids)]
-     (->> (ch/main-per-window tx model-id pool-id exclude-res-ids window)
+     (->> (ch/main-per-period tx model-id pool-id exclude-res-ids
+                               start-date end-date window)
           (map (fn [changes]
                  (let [inner-changes (ch/between changes
                                                  (ch/local-date start-date)
