@@ -46,8 +46,16 @@
 (defn being-maintained-until [_model date]
   date)
 
+(defn handed-over?
+  "Whether the item of the reservation is out: a handed over item is missing
+  from today on. One only assigned (not handed over yet) is kept just for the
+  reservation's own period; with a single item, e.g. a space, it would block
+  every earlier slot otherwise."
+  [{:keys [item_id status]}]
+  (boolean (and item_id (= "signed" (some-> status name)))))
+
 (defn get-unavailable-from [reservation]
-  (if (:item_id reservation)
+  (if (handed-over? reservation)
     (local-date)
     (t/max (local-date (:start_date reservation))
            (local-date))))
@@ -149,14 +157,14 @@
        (start-of-day (t/plus end-date (t/days 1)))])))
 
 (defn reservation-period
-  "The period a reservation keeps an item from the others. With an item
-  already assigned, from today on (see `get-unavailable-from`)."
+  "The period a reservation keeps an item from the others. With the item
+  handed over, from today on (see `handed-over?`)."
   [reservation]
   (let [[from to] (period (:start_date reservation)
                           (:end_date reservation)
                           (time-window reservation))
         today (start-of-day (local-date))]
-    [(if (and (:item_id reservation) (t/after? from today)) today from)
+    [(if (and (handed-over? reservation) (t/after? from today)) today from)
      to]))
 
 (defn overlap? [[start1 end1] [start2 end2]]
