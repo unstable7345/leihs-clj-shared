@@ -28,30 +28,32 @@
     (is (not (ch/conflicts-with-period? (on-a-week afternoon) (reservation-in morning))))
     (is (ch/conflicts-with-period? (on-a-week [(t/local-time "12:00") (t/local-time "14:00")])
                                    (reservation-in afternoon)))
-    (testing "a late reservation blocks every period"
+    (testing "a late whole-day reservation blocks every period"
       (is (ch/conflicts-with-period? (on-a-week afternoon)
-                                     (assoc (reservation-in morning)
+                                     (assoc whole-day
                                             :status "signed"
                                             :start_date (t/minus (ch/local-date) (t/days 2))
                                             :end_date (t/minus (ch/local-date) (t/days 1))
                                             :returned_date nil))))))
 
-(deftest overtime?-test
-  (let [today (t/local-date)
-        at (fn [hh-mm] (t/local-date-time today (t/local-time hh-mm)))
+(deftest late-by-the-hour-test
+  (let [today (ch/local-date)
+        yesterday (t/minus today (t/days 1))
         handed-over (assoc (reservation-in morning)
                            :status "signed" :start_date today :end_date today
+                           :item_id #uuid "00000000-0000-0000-0000-000000000001"
                            :returned_date nil)]
-    (is (not (ch/overtime? (at "12:00") handed-over)))
-    (is (ch/overtime? (at "13:00") handed-over))
-    (is (ch/overtime? (at "14:00") handed-over))
-    (is (not (ch/overtime? (at "14:00") (assoc handed-over :status "approved"))))
-    (is (not (ch/overtime? (at "14:00") (assoc handed-over :returned_date today))))
-    (is (not (ch/overtime? nil handed-over)))
-    (testing "an overtime reservation blocks the later windows of the day"
-      (let [afternoon-today (ch/period today today afternoon)]
-        (is (not (ch/conflicts-with-period? afternoon-today handed-over (at "12:00"))))
-        (is (ch/conflicts-with-period? afternoon-today handed-over (at "14:00")))))))
+    (testing "a reservation by the hour not returned yet keeps nothing after its end"
+      (is (not (ch/conflicts-with-period? (on-a-week morning)
+                                          (assoc handed-over
+                                                 :start_date yesterday
+                                                 :end_date yesterday))))
+      (is (not (ch/conflicts-with-period? (ch/period today today afternoon)
+                                          handed-over))))
+    (testing "but it does during its own period"
+      (is (ch/conflicts-with-period?
+           (ch/period today today [(t/local-time "12:00") (t/local-time "14:00")])
+           handed-over)))))
 
 (deftest assigned-item-test
   (let [today (ch/local-date)

@@ -4,9 +4,7 @@
    [com.rpl.specter :as s]
    [java-time :as t]
    [leihs.core.availability.allocations :as a]
-   [leihs.core.availability.queries :as q]
-   [leihs.core.settings :refer [settings]]
-   [leihs.core.time-zone :as time-zone]))
+   [leihs.core.availability.queries :as q]))
 
 (def UTC-ZONE-ID (java.time.ZoneId/of "UTC"))
 
@@ -170,34 +168,20 @@
 (defn overlap? [[start1 end1] [start2 end2]]
   (and (t/before? start1 end2) (t/before? start2 end1)))
 
-(defn now-in-time-zone
-  "The current date and time in the time zone of the settings, in which the
-  times of the reservations by the hour are given."
-  [tx]
-  (let [zone (or (-> (settings tx [:time_zone]) :time_zone time-zone/zone-id)
-                 UTC-ZONE-ID)]
-    (t/local-date-time (t/instant) zone)))
-
-(defn overtime?
-  "Whether a handed over reservation by the hour is still not returned after
-  its end (`now` as local date time). Like a late one, the item is then
-  missing for every other period."
-  [now {:keys [status returned_date end_date] :as reservation}]
-  (boolean
-   (when-let [[_ end-time] (time-window reservation)]
-     (and now
-          (= "signed" (some-> status name))
-          (nil? returned_date)
-          (not (t/after? (t/local-date-time (t/local-date end_date) end-time) now))))))
+(defn late-whole-day?
+  "Whether a whole-day reservation is still not returned after its end date.
+  The item is then missing for every other period. A late reservation by the
+  hour is not: once its end time is over it keeps nothing from the others,
+  so a BUC is free again without waiting for the take back."
+  [reservation]
+  (and (late? reservation) (nil? (time-window reservation))))
 
 (defn conflicts-with-period?
   "Whether the reservation competes for the same items as a request for
-  `period`. Late and overtime reservations conflict with every period."
-  ([period reservation] (conflicts-with-period? period reservation nil))
-  ([period reservation now]
-   (or (late? reservation)
-       (overtime? now reservation)
-       (overlap? period (reservation-period reservation)))))
+  `period`. Late whole-day reservations conflict with every period."
+  [period reservation]
+  (or (late-whole-day? reservation)
+      (overlap? period (reservation-period reservation))))
 
 (defn intervals
   "`period` split at the starts and ends of the reservations within it. In
@@ -237,10 +221,9 @@
         [from to] (period start-date end-date (some->> window (mapv ->local-time)))
         ;; the past does not matter (the changes start today)
         from (let [today (start-of-day (local-date))]
-               (if (and (t/before? from today) (t/before? today to)) today from))
-        now (now-in-time-zone tx)]
+               (if (and (t/before? from today) (t/before? today to)) today from))]
     (map (fn [interval]
-           (build-fn (filter #(conflicts-with-period? interval % now)
+           (build-fn (filter #(conflicts-with-period? interval %)
                              running-reservations)))
          (intervals [from to] running-reservations))))
 
