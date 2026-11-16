@@ -62,7 +62,12 @@
         general-groups (-> (sql/select :i.model_id
                                        :i.inventory_pool_id
                                        [nil :entitlement_group_id]
-                                       [[:- [:count :i.id]
+                                       ;; items in a package (e.g. a synth mounted in a buc) are
+                                       ;; lent on their own only to the named groups entitled to
+                                       ;; the model (teachers), never to the general group
+                                       [[:least
+                                         [:raw "count(i.id) FILTER (WHERE i.parent_id IS NULL)"]
+                                         [:- [:count :i.id]
                                          [:coalesce
                                           (-> (sql/select [[:sum :es.quantity] :s])
                                               (sql/from [:entitlements :es])
@@ -71,12 +76,11 @@
                                               (sql/where [:= :es.model_id :i.model_id])
                                               (sql/where [:= :entitlement_groups.inventory_pool_id :i.inventory_pool_id])
                                               (sql/group-by :entitlement_groups.inventory_pool_id :es.model_id))
-                                          0]]
+                                          0]]]
                                         :quantity])
                            (sql/from [:items :i])
                            (sql/where [:= :i.retired nil])
                            (sql/where [:= :i.is_borrowable true])
-                           (sql/where [:= :i.parent_id nil])
                            (sql/where [:= :i.model_id model-id])
                            (sql/where [:= :i.inventory_pool_id pool-id])
                            (sql/group-by :i.inventory_pool_id :i.model_id)
@@ -114,13 +118,15 @@
       (->> (jdbc-query tx))
       first))
 
-(defn get-borrowable-items [tx model-id pool-id]
+(defn get-borrowable-items
+  "Borrowable items of the model in the pool, including the borrowable ones
+  in a package (lent only to the named groups, see the general group above)."
+  [tx model-id pool-id]
   (-> (sql/select :*)
       (sql/from :items)
       (sql/where [:= :model_id model-id])
       (sql/where [:= :inventory_pool_id pool-id])
       (sql/where [:= :retired nil])
       (sql/where [:= :is_borrowable true])
-      (sql/where [:= :parent_id nil])
       sql-format
       (->> (jdbc-query tx))))
